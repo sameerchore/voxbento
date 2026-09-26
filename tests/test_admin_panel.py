@@ -79,6 +79,87 @@ def _client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+class TestAdminEventAPISettings:
+    @pytest.mark.anyio
+    async def test_updates_all_supported_api_keys(self, seed_event, admin_cookie):
+        from portal.crypto import decrypt_val
+        from portal.database import get_event_by_id, get_session
+
+        event, _, _ = seed_event
+        values = {
+            "openai_api_key": " openai-key ",
+            "deepgram_api_key": "deepgram-key",
+            "nvidia_api_key": "nvidia-key",
+            "elevenlabs_api_key": "elevenlabs-key",
+            "translation_openai_api_key": "translation-openai-key",
+            "openrouter_api_key": "openrouter-key",
+            "gemini_api_key": "gemini-key",
+            "anthropic_api_key": "anthropic-key",
+            "groq_api_key": "groq-key",
+        }
+
+        async with _client() as client:
+            response = await client.post(
+                f"/admin/events/{event.id}/api-settings",
+                data={"transcription_api_enabled": "on", **values},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+        assert response.headers["location"] == f"/admin/events/{event.id}/api-settings/"
+
+        async with get_session() as session:
+            updated_event = await get_event_by_id(session, event.id)
+
+        assert updated_event is not None
+        assert updated_event.transcription_api_enabled is True
+        for field_name, expected_value in (
+            ("encrypted_openai_api_key", "openai-key"),
+            ("encrypted_deepgram_api_key", "deepgram-key"),
+            ("encrypted_nvidia_api_key", "nvidia-key"),
+            ("encrypted_elevenlabs_api_key", "elevenlabs-key"),
+            ("encrypted_translation_openai_api_key", "translation-openai-key"),
+            ("encrypted_openrouter_api_key", "openrouter-key"),
+            ("encrypted_gemini_api_key", "gemini-key"),
+            ("encrypted_anthropic_api_key", "anthropic-key"),
+            ("encrypted_groq_api_key", "groq-key"),
+        ):
+            assert decrypt_val(getattr(updated_event, field_name)) == expected_value
+
+    @pytest.mark.anyio
+    async def test_clear_wins_and_blank_values_preserve_existing_keys(self, seed_event, admin_cookie):
+        from portal.crypto import decrypt_val
+        from portal.database import get_event_by_id, get_session
+
+        event, _, _ = seed_event
+        async with _client() as client:
+            await client.post(
+                f"/admin/events/{event.id}/api-settings",
+                data={"openai_api_key": "initial-openai", "deepgram_api_key": "initial-deepgram"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            response = await client.post(
+                f"/admin/events/{event.id}/api-settings",
+                data={
+                    "openai_api_key": "replacement-openai",
+                    "clear_openai_api_key": "on",
+                    "deepgram_api_key": "   ",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 303
+        async with get_session() as session:
+            updated_event = await get_event_by_id(session, event.id)
+
+        assert updated_event is not None
+        assert updated_event.encrypted_openai_api_key is None
+        assert decrypt_val(updated_event.encrypted_deepgram_api_key) == "initial-deepgram"
+
+
 # ---------------------------------------------------------------------------
 # Login / Logout tests
 # ---------------------------------------------------------------------------
